@@ -1,9 +1,12 @@
 #!/bin/bash
 
 PORT=8080
+LOG_DIR="/var/log"
 PIPE=$(mktemp -u)
 mkfifo "$PIPE"
 trap 'rm -f "$PIPE"; exit' INT TERM EXIT
+
+mkdir -p "$LOG_DIR"
 
 while true; do
     nc -l -p "$PORT" < "$PIPE" | {
@@ -26,10 +29,35 @@ $(free -h)
 
 DF:
 $(df -h)"
-            length=$(echo -n "$body" | wc -c)
-            echo -ne "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: $length\r\nConnection: close\r\n\r\n$body"
+            length=$(printf "%s" "$body" | wc -c)
+            printf "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" "$length" "$body"
+        
+        elif [ "$method" = "GET" ] && [[ "$route" == /logs?name=* ]]; then
+            log_name="${route#*name=}"
+            
+            if [[ "$log_name" =~ (/|\.\.|%2F|%2f|%2E|%2e) ]]; then
+                body="403 Forbidden: Security violation detected."
+                length=$(printf "%s\n" "$body" | wc -c)
+                printf "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n" "$length" "$body"
+            else
+                target_file="$LOG_DIR/$log_name"
+                
+                if [ -f "$target_file" ]; then
+                    TMP_LOG=$(mktemp)
+                    head -n 20 "$target_file" > "$TMP_LOG"
+                    length=$(stat -c%s "$TMP_LOG")
+                    printf "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" "$length"
+                    cat "$TMP_LOG"
+                    rm -f "$TMP_LOG"
+                else
+                    body="404 Not Found: Requested log does not exist."
+                    length=$(printf "%s\n" "$body" | wc -c)
+                    printf "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n" "$length" "$body"
+                fi
+            fi
+
         else
-            echo -ne "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            printf "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         fi
     } > "$PIPE"
 done
