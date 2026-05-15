@@ -15,6 +15,8 @@ if ! id -u "$USER" >/dev/null 2>&1; then
     sudo useradd -r -g "$USER" -d "$INSTALL_DIR" -s /sbin/nologin "$USER"
 fi
 
+sudo usermod -aG adm "$USER"
+
 echo "Preparing installation directory $INSTALL_DIR..."
 sudo mkdir -p "$INSTALL_DIR"
 sudo cp "$DIR/bash-server.sh" "$INSTALL_DIR/"
