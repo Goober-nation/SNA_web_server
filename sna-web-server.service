@@ -12,12 +12,19 @@ Restart=on-failure
 RestartSec=5
 Environment=PORT=8080
 Environment=LOG_DIR=/var/log/sna-server
+Environment=SYSTEM_LOG_DIR=/var/log
 Environment=ACCESS_LOG=/var/log/sna-server/access.log
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/log/sna-server
+PrivateTmp=true
+
+# Resource limits (cgroups)
+CPUQuota=10%
+MemoryMax=50M
+MemoryHigh=40M
 
 [Install]
 WantedBy=multi-user.target
