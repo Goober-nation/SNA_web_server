@@ -12,6 +12,7 @@ Restart=on-failure
 RestartSec=5
 Environment=PORT=8080
 Environment=LOG_DIR=/var/log/sna-server
+Environment=SYSTEM_LOG_DIR=/var/log
 Environment=ACCESS_LOG=/var/log/sna-server/access.log
 
 # Security hardening

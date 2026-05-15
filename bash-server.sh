@@ -5,7 +5,8 @@
 # This script intentionally uses only Bash + standard Linux utilities + netcat.
 
 PORT="${PORT:-8080}"
-LOG_DIR="${LOG_DIR:-/var/log}"
+LOG_DIR="${LOG_DIR:-/var/log/sna-server}"
+SYSTEM_LOG_DIR="${SYSTEM_LOG_DIR:-/var/log}"
 ACCESS_LOG="${ACCESS_LOG:-$LOG_DIR/access.log}"
 AUTH_USER="${AUTH_USER:-}"
 AUTH_PASS="${AUTH_PASS:-}"
@@ -190,7 +191,7 @@ while true; do
                 body='{"error":"Forbidden","message":"Security violation detected."}'
                 response_status="403 Forbidden"
             else
-                target_file="$LOG_DIR/$log_name"
+                target_file="$SYSTEM_LOG_DIR/$log_name"
 
                 if [ -f "$target_file" ]; then
                     content=$(json_escape "$(head -n 20 "$target_file")")
@@ -222,13 +223,13 @@ while true; do
             response_status="200 OK"
 
         elif [ "$method" = "GET" ] && [ "$route" = "/download-list" ]; then
-            if [ ! -d "$LOG_DIR" ] || [ ! -r "$LOG_DIR" ]; then
-                log_dir_escaped=$(json_escape "$LOG_DIR")
+            if [ ! -d "$SYSTEM_LOG_DIR" ] || [ ! -r "$SYSTEM_LOG_DIR" ]; then
+                log_dir_escaped=$(json_escape "$SYSTEM_LOG_DIR")
                 body="{\"error\":\"Log directory not accessible.\",\"log_dir\":\"$log_dir_escaped\"}"
                 response_status="500 Internal Server Error"
             else
-                files=$(find "$LOG_DIR" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null | sort)
-                log_dir_escaped=$(json_escape "$LOG_DIR")
+                files=$(find "$SYSTEM_LOG_DIR" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null | sort)
+                log_dir_escaped=$(json_escape "$SYSTEM_LOG_DIR")
                 if [ -z "$files" ]; then
                     files_json="[]"
                 else
