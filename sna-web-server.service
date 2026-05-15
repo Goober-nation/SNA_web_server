@@ -18,6 +18,7 @@ Environment=ACCESS_LOG=/var/log/sna-server/access.log
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/log/sna-server
+PrivateTmp=true
 
 # Resource limits (cgroups)
 CPUQuota=10%
