@@ -1,0 +1,23 @@
+[Unit]
+Description=Bash HTTP Server (SNA Team 41)
+After=network.target
+
+[Service]
+Type=simple
+User=sna-server
+Group=sna-server
+WorkingDirectory=/opt/sna_web_server
+ExecStart=/opt/sna_web_server/bash-server.sh
+Restart=on-failure
+RestartSec=5
+Environment=PORT=8080
+Environment=LOG_DIR=/var/log/sna-server
+Environment=ACCESS_LOG=/var/log/sna-server/access.log
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/sna-server
+
+[Install]
+WantedBy=multi-user.target

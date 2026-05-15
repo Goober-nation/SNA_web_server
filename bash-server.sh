@@ -6,6 +6,9 @@
 
 PORT="${PORT:-8080}"
 LOG_DIR="${LOG_DIR:-/var/log}"
+ACCESS_LOG="${ACCESS_LOG:-$LOG_DIR/access.log}"
+AUTH_USER="${AUTH_USER:-}"
+AUTH_PASS="${AUTH_PASS:-}"
 SERVER_START_TIME=$(date +%s)
 SERVER_PID=$$
 
@@ -28,6 +31,10 @@ mkdir -p "$LOG_DIR" 2>/dev/null || {
     echo "Cannot create or access log directory: $LOG_DIR" >&2
     exit 1
 }
+touch "$ACCESS_LOG" 2>/dev/null || {
+    echo "Cannot create access log: $ACCESS_LOG" >&2
+    exit 1
+}
 
 printf "0" > "$REQUEST_COUNT_FILE"
 printf "0" > "$DOWNLOAD_COUNT_FILE"
@@ -36,11 +43,29 @@ printf "No requests yet" > "$LAST_REQUEST_FILE"
 send_response() {
     local status="$1"
     local body="$2"
+    local content_type="${3:-application/json}"
     local length
 
     length=$(printf "%s" "$body" | wc -c)
-    printf "HTTP/1.1 %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" \
-        "$status" "$length" "$body"
+    printf "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" \
+        "$status" "$content_type" "$length" "$body"
+}
+
+send_auth_challenge() {
+    local body='{"error":"Unauthorized"}'
+    local length=${#body}
+    printf "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"SNA Server\"\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" \
+        "$length" "$body"
+}
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
 }
 
 read_counter() {
@@ -108,26 +133,12 @@ get_memory_usage() {
         printf "Memory information is not available for PID %s" "$SERVER_PID"
 }
 
-build_download_list_body() {
-    local files
-
-    if [ ! -d "$LOG_DIR" ]; then
-        printf "Log directory does not exist: %s" "$LOG_DIR"
-        return
-    fi
-
-    if [ ! -r "$LOG_DIR" ]; then
-        printf "Log directory is not readable: %s" "$LOG_DIR"
-        return
-    fi
-
-    files=$(find "$LOG_DIR" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null | sort)
-
-    if [ -z "$files" ]; then
-        printf "No regular log files found in %s." "$LOG_DIR"
-    else
-        printf "Available log files in %s:\n%s" "$LOG_DIR" "$files"
-    fi
+log_access() {
+    local timestamp="$1"
+    local method="$2"
+    local route="$3"
+    local status="$4"
+    printf "[%s] %s %s %s\n" "$timestamp" "$method" "$route" "$status" >> "$ACCESS_LOG"
 }
 
 while true; do
@@ -137,75 +148,136 @@ while true; do
         method=$(echo "$request_line" | awk '{print $1}')
         route=$(echo "$request_line" | awk '{print $2}')
 
+        provided_credentials=""
         while read -r header; do
             header=$(echo "$header" | tr -d '\r')
             [ -z "$header" ] && break
+            if [[ "$header" == "Authorization: Basic "* ]]; then
+                provided_credentials="${header#Authorization: Basic }"
+            fi
         done
 
         request_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         increment_counter "$REQUEST_COUNT_FILE"
         printf "%s %s %s" "$request_timestamp" "$method" "$route" > "$LAST_REQUEST_FILE"
 
+        if [ -n "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
+            expected_credentials=$(printf "%s:%s" "$AUTH_USER" "$AUTH_PASS" | base64 | tr -d '\n')
+            if [ "$provided_credentials" != "$expected_credentials" ]; then
+                log_access "$request_timestamp" "$method" "$route" "401 Unauthorized"
+                send_auth_challenge
+                exit
+            fi
+        fi
+
+        response_status="404 Not Found"
+        body='{"error":"Not Found","message":"Unknown endpoint."}'
+
         if [ "$method" = "GET" ] && [ "$route" = "/health" ]; then
-            body="UPTIME:
-$(uptime)
-
-FREE:
-$(free -h)
-
-DF:
-$(df -h)"
-            send_response "200 OK" "$body"
+            uptime_val=$(json_escape "$(uptime)")
+            free_val=$(json_escape "$(free -h)")
+            df_val=$(json_escape "$(df -h)")
+            body="{\"uptime\":\"$uptime_val\",\"free\":\"$free_val\",\"df\":\"$df_val\"}"
+            response_status="200 OK"
 
         elif [ "$method" = "GET" ] && [[ "$route" == /logs?name=* ]]; then
             log_name="${route#*name=}"
 
             if [ -z "$log_name" ]; then
-                body="400 Bad Request: Log name is empty. Use /logs?name=<file>."
-                send_response "400 Bad Request" "$body"
+                body='{"error":"Bad Request","message":"Log name is empty. Use /logs?name=<file>."}'
+                response_status="400 Bad Request"
             elif [[ "$log_name" =~ (/|\.\.|%2F|%2f|%2E|%2e) ]]; then
-                body="403 Forbidden: Security violation detected."
-                send_response "403 Forbidden" "$body"
+                body='{"error":"Forbidden","message":"Security violation detected."}'
+                response_status="403 Forbidden"
             else
                 target_file="$LOG_DIR/$log_name"
 
                 if [ -f "$target_file" ]; then
-                    body=$(head -n 20 "$target_file")
+                    content=$(json_escape "$(head -n 20 "$target_file")")
+                    body="{\"file\":\"$log_name\",\"content\":\"$content\"}"
                     increment_counter "$DOWNLOAD_COUNT_FILE"
-                    send_response "200 OK" "$body"
+                    response_status="200 OK"
                 else
-                    body="404 Not Found: Requested log does not exist."
-                    send_response "404 Not Found" "$body"
+                    body='{"error":"Not Found","message":"Requested log does not exist."}'
+                    response_status="404 Not Found"
                 fi
             fi
 
         elif [ "$method" = "GET" ] && [ "$route" = "/metrics" ]; then
-            body="SERVER METRICS:
-Request counter: $(read_counter "$REQUEST_COUNT_FILE")
-Downloaded files: $(read_counter "$DOWNLOAD_COUNT_FILE")
-Server uptime: $(format_server_uptime)
-Last request: $(cat "$LAST_REQUEST_FILE" 2>/dev/null)
-
-Bash process memory usage:
-$(get_memory_usage)"
-            send_response "200 OK" "$body"
+            req_count=$(read_counter "$REQUEST_COUNT_FILE")
+            dl_count=$(read_counter "$DOWNLOAD_COUNT_FILE")
+            srv_uptime=$(json_escape "$(format_server_uptime)")
+            last_req=$(json_escape "$(cat "$LAST_REQUEST_FILE" 2>/dev/null)")
+            mem=$(json_escape "$(get_memory_usage)")
+            body="{\"request_count\":$req_count,\"downloaded_files\":$dl_count,\"server_uptime\":\"$srv_uptime\",\"last_request\":\"$last_req\",\"memory_usage\":\"$mem\"}"
+            response_status="200 OK"
 
         elif [ "$method" = "GET" ] && [ "$route" = "/info" ]; then
-            body="SYSTEM INFO:
-Hostname: $(hostname)
-Kernel: $(uname -r)
-OS: $(get_os_info)
-CPU: $(get_cpu_info)
-Current user: $(whoami)"
-            send_response "200 OK" "$body"
+            hostname_val=$(json_escape "$(hostname)")
+            kernel_val=$(json_escape "$(uname -r)")
+            os_val=$(json_escape "$(get_os_info)")
+            cpu_val=$(json_escape "$(get_cpu_info)")
+            user_val=$(json_escape "$(whoami)")
+            body="{\"hostname\":\"$hostname_val\",\"kernel\":\"$kernel_val\",\"os\":\"$os_val\",\"cpu\":\"$cpu_val\",\"user\":\"$user_val\"}"
+            response_status="200 OK"
 
         elif [ "$method" = "GET" ] && [ "$route" = "/download-list" ]; then
-            body=$(build_download_list_body)
-            send_response "200 OK" "$body"
+            if [ ! -d "$LOG_DIR" ] || [ ! -r "$LOG_DIR" ]; then
+                log_dir_escaped=$(json_escape "$LOG_DIR")
+                body="{\"error\":\"Log directory not accessible.\",\"log_dir\":\"$log_dir_escaped\"}"
+                response_status="500 Internal Server Error"
+            else
+                files=$(find "$LOG_DIR" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null | sort)
+                log_dir_escaped=$(json_escape "$LOG_DIR")
+                if [ -z "$files" ]; then
+                    files_json="[]"
+                else
+                    files_json=$(printf '%s' "$files" | awk 'BEGIN{printf "["} NR>1{printf ","} {printf "\"%s\"", $0} END{printf "]"}')
+                fi
+                body="{\"log_dir\":\"$log_dir_escaped\",\"files\":$files_json}"
+                response_status="200 OK"
+            fi
 
-        else
-            body="404 Not Found: Unknown endpoint."
-            send_response "404 Not Found" "$body"
+        elif [ "$method" = "GET" ] && [[ "$route" == "/access-log"* ]]; then
+            n=50
+            if [[ "$route" == *"?n="* ]]; then
+                n="${route#*?n=}"
+                [[ "$n" =~ ^[0-9]+$ ]] || n=50
+            fi
+
+            if [ -f "$ACCESS_LOG" ]; then
+                entries=$(tail -n "$n" "$ACCESS_LOG")
+                if [ -z "$entries" ]; then
+                    entries_json="[]"
+                else
+                    entries_json=$(printf '%s' "$entries" | awk 'BEGIN{printf "["} NR>1{printf ","} {gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "\"%s\"", $0} END{printf "]"}')
+                fi
+                body="{\"requested\":$n,\"entries\":$entries_json}"
+            else
+                body='{"error":"Access log not found."}'
+            fi
+            response_status="200 OK"
+
+        elif [ "$method" = "GET" ] && [ "$route" = "/status" ]; then
+            uptime_val=$(json_escape "$(uptime)")
+            free_val=$(json_escape "$(free -h)")
+            df_val=$(json_escape "$(df -h)")
+            req_count=$(read_counter "$REQUEST_COUNT_FILE")
+            dl_count=$(read_counter "$DOWNLOAD_COUNT_FILE")
+            srv_uptime=$(json_escape "$(format_server_uptime)")
+            last_req=$(json_escape "$(cat "$LAST_REQUEST_FILE" 2>/dev/null)")
+            mem=$(json_escape "$(get_memory_usage)")
+            hostname_val=$(json_escape "$(hostname)")
+            kernel_val=$(json_escape "$(uname -r)")
+            os_val=$(json_escape "$(get_os_info)")
+            cpu_val=$(json_escape "$(get_cpu_info)")
+            user_val=$(json_escape "$(whoami)")
+            ts=$(json_escape "$request_timestamp")
+            body="{\"timestamp\":\"$ts\",\"health\":{\"uptime\":\"$uptime_val\",\"free\":\"$free_val\",\"df\":\"$df_val\"},\"metrics\":{\"request_count\":$req_count,\"downloaded_files\":$dl_count,\"server_uptime\":\"$srv_uptime\",\"last_request\":\"$last_req\",\"memory_usage\":\"$mem\"},\"info\":{\"hostname\":\"$hostname_val\",\"kernel\":\"$kernel_val\",\"os\":\"$os_val\",\"cpu\":\"$cpu_val\",\"user\":\"$user_val\"}}"
+            response_status="200 OK"
         fi
+
+        log_access "$request_timestamp" "$method" "$route" "$response_status"
+        send_response "$response_status" "$body"
     } > "$PIPE"
 done
