@@ -40,12 +40,14 @@ sudo ./uninstall.sh
 
 ### Basic Authentication (optional)
 
-Set `AUTH_USER` and `AUTH_PASS` environment variables to enable Basic Auth on all endpoints:
+Set `AUTH_USER` and `AUTH_PASS` environment variables to enable Basic Auth on all endpoints.
 
+**For service installation:**
 ```bash
-sudo AUTH_USER=admin AUTH_PASS=secret ./bash-server.sh
+sudo AUTH_USER=admin AUTH_PASS=secret ./install.sh
 ```
 
+**Test access:**
 ```bash
 curl -u admin:secret http://localhost:8080/status
 ```
