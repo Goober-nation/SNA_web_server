@@ -18,30 +18,30 @@ STATE_DIR=$(mktemp -d)
 REQUEST_COUNT_FILE="$STATE_DIR/request_count"
 DOWNLOAD_COUNT_FILE="$STATE_DIR/download_count"
 LAST_REQUEST_FILE="$STATE_DIR/last_request"
+RESOURCE_HISTORY_FILE="$STATE_DIR/resource_history.log"
 
 mkfifo "$PIPE"
 
 cleanup() {
+    [ -n "$COLLECTOR_PID" ] && kill "$COLLECTOR_PID" 2>/dev/null
     rm -f "$PIPE"
     rm -rf "$STATE_DIR"
     exit
 }
 trap cleanup INT TERM EXIT
 
-mkdir -p "$LOG_DIR" 2>/dev/null || {
-    echo "Cannot create or access log directory: $LOG_DIR" >&2
-    exit 1
+collect_resources() {
+    while true; do
+        local timestamp=$(date +%s)
+        local cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}')
+        local ram_usage=$(free 2>/dev/null | awk '/Mem:/ { printf("%.2f", $3/$2*100) }')
+        printf "%s %s %s\n" "$timestamp" "${cpu_load:-0}" "${ram_usage:-0}" >> "$RESOURCE_HISTORY_FILE"
+        sleep 60
+    done
 }
-touch "$ACCESS_LOG" 2>/dev/null || {
-    echo "Cannot create access log: $ACCESS_LOG" >&2
-    exit 1
-}
-
-printf "0" > "$REQUEST_COUNT_FILE"
-printf "0" > "$DOWNLOAD_COUNT_FILE"
-printf "No requests yet" > "$LAST_REQUEST_FILE"
 
 send_response() {
+
     local status="$1"
     local body="$2"
     local content_type="${3:-application/json}"
@@ -141,6 +141,9 @@ log_access() {
     local status="$4"
     printf "[%s] %s %s %s\n" "$timestamp" "$method" "$route" "$status" >> "$ACCESS_LOG"
 }
+
+collect_resources &
+COLLECTOR_PID=$!
 
 while true; do
     nc -l -p "$PORT" < "$PIPE" | {
@@ -275,6 +278,33 @@ while true; do
             user_val=$(json_escape "$(whoami)")
             ts=$(json_escape "$request_timestamp")
             body="{\"timestamp\":\"$ts\",\"health\":{\"uptime\":\"$uptime_val\",\"free\":\"$free_val\",\"df\":\"$df_val\"},\"metrics\":{\"request_count\":$req_count,\"downloaded_files\":$dl_count,\"server_uptime\":\"$srv_uptime\",\"last_request\":\"$last_req\",\"memory_usage\":\"$mem\"},\"info\":{\"hostname\":\"$hostname_val\",\"kernel\":\"$kernel_val\",\"os\":\"$os_val\",\"cpu\":\"$cpu_val\",\"user\":\"$user_val\"}}"
+            response_status="200 OK"
+
+        elif [ "$method" = "GET" ] && [ "$route" = "/stats" ]; then
+            now=$(date +%s)
+            hour_ago=$((now - 3600))
+            stats=$(awk -v start="$hour_ago" '$1 >= start { 
+                cpu_sum+=$2; cpu_max=($2>cpu_max?$2:cpu_max); 
+                ram_sum+=$3; ram_max=($3>ram_max?$3:ram_max); 
+                count++ 
+            } END { 
+                if (count > 0) 
+                    printf "%.2f %.2f %.2f %.2f", cpu_sum/count, cpu_max, ram_sum/count, ram_max; 
+                else 
+                    printf "0 0 0 0" 
+            }' "$RESOURCE_HISTORY_FILE" 2>/dev/null)
+            
+            read -r c_avg c_max r_avg r_max <<< "$stats"
+            body="{\"cpu_avg\":${c_avg:-0},\"cpu_max\":${c_max:-0},\"ram_avg\":${r_avg:-0},\"ram_max\":${r_max:-0}}"
+            response_status="200 OK"
+
+        elif [ "$method" = "GET" ] && [ "$route" = "/top" ]; then
+            cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}')
+            ram_usage=$(free 2>/dev/null | awk '/Mem:/ { printf("%.2f", $3/$2*100) }')
+            proc_json=$(ps -eo pid,comm,%cpu,%mem --sort=-%cpu | awk 'NR>1 && NR<=6 {
+                printf "{\"pid\":%s,\"comm\":\"%s\",\"cpu\":%s,\"mem\":%s}", $1, $2, $3, $4
+            }' | awk 'BEGIN {printf "["} {if (NR>1) printf ","; printf "%s", $0} END {printf "]"}')
+            body="{\"cpu_load\":${cpu_load:-0},\"ram_usage\":${ram_usage:-0},\"top_processes\":$proc_json}"
             response_status="200 OK"
         fi
 
