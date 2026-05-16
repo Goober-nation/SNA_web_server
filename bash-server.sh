@@ -291,7 +291,11 @@ while true; do
                 if (count > 0) 
                     printf "%.2f %.2f %.2f %.2f", cpu_sum/count, cpu_max, ram_sum/count, ram_max; 
                 else 
+<<<<<<< HEAD
                     printf "0 0 0 0" 
+=======
+                    printf "-1 -1 -1 -1" 
+>>>>>>> 3a75dc4 (add stats and top endpoints + small fixes)
             }' "$RESOURCE_HISTORY_FILE" 2>/dev/null)
             
             read -r c_avg c_max r_avg r_max <<< "$stats"

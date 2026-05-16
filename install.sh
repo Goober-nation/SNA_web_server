@@ -31,6 +31,11 @@ sudo chmod 750 "$LOG_DIR"
 echo "Installing systemd service..."
 sudo cp "$DIR/$NAME.service" "$SERVICE_FILE"
 
+if [ -n "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
+    echo "Configuring Basic Auth..."
+    sudo sed -i "/\[Service\]/a Environment=AUTH_USER=$AUTH_USER\nEnvironment=AUTH_PASS=$AUTH_PASS" "$SERVICE_FILE"
+fi
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$NAME"
 
