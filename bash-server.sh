@@ -121,7 +121,7 @@ get_os_info() {
 get_cpu_info() {
     local cpu
 
-    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
+    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name|Model:/ {gsub(/^[ \t]+/, "", $2); if ($2 != "") { print $2; exit }}')
     if [ -n "$cpu" ] && [ "$cpu" != "unknown" ]; then
         printf "%s" "$cpu"
     else
@@ -163,7 +163,6 @@ while true; do
 
         request_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         increment_counter "$REQUEST_COUNT_FILE"
-        printf "%s %s %s" "$request_timestamp" "$method" "$route" > "$LAST_REQUEST_FILE"
 
         if [ -n "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
             expected_credentials=$(printf "%s:%s" "$AUTH_USER" "$AUTH_PASS" | base64 | tr -d '\n')
@@ -290,12 +289,8 @@ while true; do
             } END { 
                 if (count > 0) 
                     printf "%.2f %.2f %.2f %.2f", cpu_sum/count, cpu_max, ram_sum/count, ram_max; 
-                else 
-<<<<<<< HEAD
-                    printf "0 0 0 0" 
-=======
-                    printf "-1 -1 -1 -1" 
->>>>>>> 3a75dc4 (add stats and top endpoints + small fixes)
+                else
+                	printf "-1 -1 -1 -1"
             }' "$RESOURCE_HISTORY_FILE" 2>/dev/null)
             
             read -r c_avg c_max r_avg r_max <<< "$stats"
@@ -306,12 +301,13 @@ while true; do
             cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}')
             ram_usage=$(free 2>/dev/null | awk '/Mem:/ { printf("%.2f", $3/$2*100) }')
             proc_json=$(ps -eo pid,comm,%cpu,%mem --sort=-%cpu | awk 'NR>1 && NR<=6 {
-                printf "{\"pid\":%s,\"comm\":\"%s\",\"cpu\":%s,\"mem\":%s}", $1, $2, $3, $4
+                printf "{\"pid\":%s,\"comm\":\"%s\",\"cpu\":%s,\"mem\":%s}\n", $1, $2, $3, $4
             }' | awk 'BEGIN {printf "["} {if (NR>1) printf ","; printf "%s", $0} END {printf "]"}')
             body="{\"cpu_load\":${cpu_load:-0},\"ram_usage\":${ram_usage:-0},\"top_processes\":$proc_json}"
             response_status="200 OK"
         fi
 
+        printf "%s %s %s" "$request_timestamp" "$method" "$route" > "$LAST_REQUEST_FILE"
         log_access "$request_timestamp" "$method" "$route" "$response_status"
         send_response "$response_status" "$body"
     } > "$PIPE"
